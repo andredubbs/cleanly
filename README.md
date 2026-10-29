@@ -1,85 +1,38 @@
-# Cleanly
+# Cleanly safety fork
 
-Стильный и честный очиститель для **Windows** и **macOS**: мусор, кэш браузеров, карта диска, большие и старые файлы, дубликаты, автозагрузка, приложения.
+Safety-focused fork of [0xCodez/cleanly](https://github.com/0xCodez/cleanly), based on upstream v0.1.1 (`5009618`). This changes the existing Electron app, not its visual design or technology stack. The fork uses the distinct app name **Cleanly Safety** and bundle ID `com.andredubbs.cleanly.safety`, so its installation/settings do not reuse the original app identity.
 
-> Статус: рабочее приложение на Electron (см. раздел «Приложение» ниже). Визуальный эталон — веб-макет [`web/index.html`](web/index.html): компоновка Fusion, шрифты Unbounded + Onest + JetBrains Mono, стеклянные пузыри, анимация «космический ветер», фон Mist.
->
-> Раньше проект назывался Glint — это имя осталось в ранних макетах в `design/`.
+## What changed
 
-## Принципы
+- **Review, then Trash.** No auto-selected cleanup categories, no permanent cache deletion, and no empty-Trash command. Every cleanup requires confirmation. Moving files to Trash is not reported as newly freed disk space.
+- **Protect managed data.** File discovery and removal share package/app-data protections. Photos/Music libraries, apps, development packages, hidden configuration, credential folders and recognized cloud-sync folders are not loose cleanup candidates. A selected parent containing protected data is refused too. The application uninstaller remains a separate, explicitly selected operation.
+- **Conservative Mac caches.** Broad user-cache, log, developer-cache and Xcode wipes are removed. Only specific browser-cache locations remain; entries must be wholly older than seven days. Running browsers or a failed process check stop cleanup. Fresh files, symlinks, changed entries and oversized/unreadable trees are retained. Trash failure never falls back to deletion.
+- **Cloud AI is off by default.** Saving a key does not enable it. After explicit opt-in, the provider receives typed questions, anonymous item IDs, sizes and disk totals, not scanned names, paths, dates or contents. Questions can themselves contain private information, and API charges may apply. Suggestions cannot invent a local path or mark a file automatically safe.
+- **Startup inventory is read-only.** No LaunchAgent/registry enable, disable, restart or administrator fallback.
+- **Mac packaging fails closed.** Developer ID signing, hardened runtime, notarization, a stapled app ticket and Gatekeeper assessment are required. No quarantine-removal instructions or unsigned fallback. Packaging is manual, with no tag-triggered publication.
 
-- **Безопасно по умолчанию** — ваши файлы (большие, дубликаты, старые загрузки) уходят в Корзину и восстанавливаются; кэш и временные файлы удаляются насовсем, потому что приложения создают их заново.
-- **Понятно** — показываем, что именно и почему удаляем, без «страшилок».
-- **Быстро** — параллельное сканирование, тяжёлые проверки идут в фоне.
+## Verify without launching the app
 
-## UI-концепты
-
-| | Направление | Идея |
-|---|---|---|
-| A | **Aurora** | Тёмное стекло, неоновые акценты, пузырьковая карта диска |
-| B | **Graphite** | Светлый, строгий, плотный — treemap и чек-лист с точными размерами |
-| C | **Orbit** | Тёплый и дружелюбный — «индекс здоровья», советы в один клик, автопилот |
-| D | **Prism** | Английский UI, светлая сетка, живая ASCII-анимация, голографические карточки |
-| E | **Fusion** | Компоновка Aurora + оформление Prism, ASCII-пузыри на карте диска |
-| F | **Elements** | Тёмный, «стихийные» капсулы с анимацией: огонь, ветер, лотос, солнце |
-| G | **Liquid** | Светлое стекло в духе Apple, виджеты статуса, стеклянные иконки пространств |
-| H | **Assistant** | ИИ-очистка: выбор Claude / ChatGPT / локальной модели, шаги рассуждения, карточки находок |
-| **I** | **Liquid Aura** ★ | Выбранное направление: компоновка Aurora в стекле Liquid — стеклянные пузыри-пространства, цветные виджеты |
-
-Исходники макетов — в [`design/`](design/).
-
-**Веб-концепт Fusion** (новые шрифты Unbounded + Onest + JetBrains Mono, свой набор duotone-иконок): [`web/index.html`](web/index.html) — открывается в любом браузере.
-
-## Стек
-
-- [Electron](https://www.electronjs.org) — main-процесс на Node (сканирование, очистка, корзина), один кодбейс для Windows и macOS
-- React + TypeScript + Vite — интерфейс
-
-## Модули (MVP)
-
-- Умная проверка
-- Очистка: временные файлы, кэш браузеров и обновлений, корзина, логи
-- Карта диска
-- Большие и старые файлы
-- Дубликаты
-- Автозагрузка
-- Приложения (удаление с хвостами)
-- ИИ-ассистент: подключение Claude или ChatGPT по своему API-ключу, либо локальная модель; модели передаются только имена и размеры файлов
-
-## Приложение
-
-Десктопное приложение — Electron + React + TypeScript + Vite. Код главного процесса — в `electron/`, интерфейс — в `src/`, общие типы — в `shared/types.ts`.
-
-### Запуск
-
-Нужен Node.js 22 или новее.
-
-```bash
-npm install      # зависимости и бинарник Electron
-npm run dev      # приложение с горячей перезагрузкой интерфейса
-npm run demo     # только интерфейс в браузере на http://localhost:5174 — демо-данные, диск не трогается
+```sh
+npm ci --ignore-scripts --no-audit --no-fund
+npm test
+npm run build
 ```
 
-### Сборка
+Tests execute production service functions against isolated fixture files with a simulated Mac policy. Electron, OS command execution and network requests are mocked. They never load an Electron executable, access the real home folder or call a paid API. The tests exercise successful recoverable moves as well as refusal paths; no destructive test uses personal files.
 
-```bash
-npm run dist:win   # Windows: установщик и portable-версия (x64)
-npm run dist:mac   # macOS: .dmg и .zip для Apple Silicon (arm64) и Intel (x64); собирается только на Mac
-```
+`npm run build` creates the web renderer and main/preload bundles only. It does not launch or install the app. The browser demo uses synthetic data and the same default-off/read-only controls, but is not a native-app security test.
 
-Готовые файлы появляются в `release/`. Иконка лежит в `build/icon.svg`; после правок пересоберите PNG командой `npm run icons` — `.ico` и `.icns` electron-builder сделает из него сам.
+## Signed Mac packages
 
-### Скачать готовую сборку
+`npm run dist:mac` stops before packaging unless certificate and notarization credentials are configured. Direct electron-builder invocations are gated by `beforePack` too. After signing, the hook checks the Developer ID identity, hardened runtime, deep signature, stapled ticket and Gatekeeper acceptance before packaging artifacts are uploaded.
 
-- **GitHub Actions** — workflow «Build Cleanly» собирает Windows и macOS. Запустите его вручную (вкладка Actions → Build Cleanly → Run workflow) и скачайте архивы `cleanly-windows` и `cleanly-macos` в разделе Artifacts внизу страницы запуска.
-- **Releases** — при пуше тега вида `v0.1.0` (`git tag v0.1.0 && git push origin v0.1.0`) сборки автоматически прикрепляются к новому релизу на странице Releases.
+The manual **Signed Mac package** workflow accepts repository secrets `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID`. These belong in the existing managed secrets route, never source control or logs. Local packaging also supports the electron-builder Apple API-key or keychain-profile credential routes. No certificate was created or purchased, and no notarized package has been produced as part of these source changes.
 
-### macOS: первый запуск
+The **Safety checks** workflow runs tests and builds on pull requests and main. It does not start Electron, a simulator, or another device runtime. No binary release is automatically published.
 
-Сборки пока не подписаны сертификатом Apple и не нотаризованы (только ad-hoc подпись), поэтому macOS скажет, что приложение «повреждено» или от неизвестного разработчика. Перетащите Cleanly в «Программы» и один раз снимите карантин:
+## Limits and attribution
 
-```bash
-xattr -cr /Applications/Cleanly.app
-```
+This is a safety-hardening patch, not a guarantee that all bugs or malware risks are eliminated. Paths can still change in the final interval before an OS Trash operation; revalidation narrows that window but is not an atomic filesystem transaction. Recovery depends on the system Trash and on not emptying it. Native signing/notarization and runtime verification remain distinct from source tests.
 
-После этого приложение открывается как обычно. На Windows SmartScreen может показать предупреждение — «Подробнее» → «Выполнить в любом случае».
+The original author is 0xCodez. Upstream currently declares `UNLICENSED`; this fork preserves that declaration and does not add a new license or publish redistributed binaries.

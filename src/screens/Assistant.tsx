@@ -18,7 +18,7 @@ const PROVIDERS: Record<AiProvider, { name: string; keyUrl: string; placeholder:
 };
 
 const SUGGESTIONS = ['What can I safely delete?', 'Why is my disk so full?', "Which large files haven't I used in a year?"];
-const PRIVACY = 'Only file names, paths and sizes are shared — never file contents.';
+const PRIVACY = 'Cloud AI receives your typed questions and anonymous item IDs/sizes. Scanned names, paths and file contents stay local.';
 const LARGE_MIN = 500 * 1024 * 1024;
 
 const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -107,7 +107,7 @@ export default function Assistant() {
 
   const provider = settings?.aiProvider ?? 'claude';
   const hasKey = settings ? (provider === 'claude' ? settings.hasClaudeKey : settings.hasOpenAiKey) : false;
-  const ready = !!settings && hasKey;
+  const ready = !!settings && hasKey && settings.cloudAiEnabled;
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
@@ -246,6 +246,12 @@ export default function Assistant() {
             <span className="spinner" />
             Getting the assistant ready
           </div>
+        ) : !settings.cloudAiEnabled ? (
+          <div className="sy-intro rise">
+            <h2>Cloud AI is off</h2>
+            <p>{PRIVACY} API charges may apply when enabled.</p>
+            <button type="button" className="btn" onClick={() => go('settings')}>Assistant settings</button>
+          </div>
         ) : !hasKey ? (
           <KeySetup provider={provider} />
         ) : messages.length === 0 && !asking ? (
@@ -255,7 +261,7 @@ export default function Assistant() {
             </span>
             <h2>What would you like to know?</h2>
             <p>
-              I can look at your scan results, the biggest folders and large files, then suggest what is safe to remove and what is worth keeping.
+              I can compare anonymous item sizes. I cannot see file names or contents, so review each file yourself before moving it to Trash.
             </p>
             <span className="sy-privacy">
               <Icon name="shield" />

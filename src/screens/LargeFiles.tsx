@@ -154,7 +154,7 @@ export default function LargeFiles() {
       const result = await api.trashPaths(paths);
       const moved = result.removed;
       const note = result.failed > 0 ? ` · ${result.failed} could not be moved` : '';
-      toast(`Moved ${moved} ${moved === 1 ? 'file' : 'files'} (${formatBytes(result.freed)}) to Trash${note}`, result.failed && !moved ? 'err' : 'ok');
+      toast(`Moved ${moved} ${moved === 1 ? 'file' : 'files'} (${formatBytes(result.trashedBytes ?? 0)}) to Trash${note}`, result.failed && !moved ? 'err' : 'ok');
       if (result.failed > 0) {
         await load(true);
       } else {

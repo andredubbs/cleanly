@@ -1,4 +1,5 @@
 import os from 'node:os';
+import { isManagedPath } from './pathPolicy';
 import path from 'node:path';
 import type { LargeFile, ScanProgress } from '../../shared/types';
 import { dataDriveMounts, listDisks } from './disk';
@@ -76,7 +77,7 @@ export async function scanLargeFiles(minBytes: unknown, progress: Progress): Pro
   progress({ task: 'large', phase: homePhase, done: 0, total: 0 });
 
   const collect = (f: WalkFile) => {
-    if (f.size < min) return;
+    if (f.size < min || isManagedPath(f.path)) return;
     found.push({ path: f.path, name: f.name, size: f.size, modified: f.mtimeMs, accessed: f.atimeMs, kind: kindOf(f.name) });
     if (found.length > MAX_RESULTS * 10) trim();
   };
@@ -90,7 +91,7 @@ export async function scanLargeFiles(minBytes: unknown, progress: Progress): Pro
   const homeStats = await walk(home, {
     maxEntries: MAX_ENTRIES,
     skipDir: (p, name) =>
-      skipSet.has(p.toLowerCase()) || (CACHE_DIRS.has(name.toLowerCase()) && isInside(appData, p)),
+      isManagedPath(p) || skipSet.has(p.toLowerCase()) || (CACHE_DIRS.has(name.toLowerCase()) && isInside(appData, p)),
     onFile: collect,
     onTick: ticker(homePhase),
   });
@@ -111,7 +112,7 @@ export async function scanLargeFiles(minBytes: unknown, progress: Progress): Pro
     const stats = await walk(d.mount, {
       maxEntries: budget,
       skipDir: (p, name, depth) =>
-        isInside(home, p) || samePath(home, p) ||
+        isManagedPath(p) || isInside(home, p) || samePath(home, p) ||
         (depth === 1 && (DRIVE_SKIP_TOP.has(name.toLowerCase()) || name.startsWith(isWin ? '$' : '.'))),
       onFile: (f) => {
         if (f.depth === 1 && SYSTEM_FILES.test(f.name)) return;

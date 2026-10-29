@@ -36,7 +36,7 @@ export function Sidebar() {
   const note = !sys
     ? 'Measuring…'
     : reclaimable > 0
-      ? `${formatBytes(reclaimable)} can be reclaimed${many ? ` on ${driveName(sys)}` : ''}`
+      ? `${formatBytes(reclaimable)} to review${many ? ` on ${driveName(sys)}` : ''}`
       : many
         ? `${formatBytes(drives.reduce((a, d) => a + d.free, 0))} free on ${drives.length} drives`
         : `${formatBytes(sys.free)} free`;

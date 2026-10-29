@@ -1,15 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { JunkCategory } from '../../shared/types';
 import { Icon } from '../components/Icon';
 import { CleanButton, Empty, Progress, ScreenHead } from '../components/ui';
 import { formatBytes, shortPath, splitBytes, sum } from '../lib/format';
 import { useStore } from '../state';
 import './files.css';
 
-const isPermanent = (c: JunkCategory) => /recycle|trash/i.test(`${c.id} ${c.name}`);
 
 export default function Cleanup() {
-  const { junk, scanning, smartScan, progress, cleaning, cleanJunk, system, settings, toast } = useStore();
+  const { junk, scanning, smartScan, progress, cleaning, cleanJunk, system, toast } = useStore();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirming, setConfirming] = useState(false);
   const [done, setDone] = useState(false);
@@ -32,7 +30,6 @@ export default function Cleanup() {
   const chosen = items.filter((c) => selected.has(c.id) && c.size > 0);
   const total = sum(chosen.map((c) => c.size));
   const files = sum(chosen.map((c) => c.count));
-  const hasPermanent = chosen.some(isPermanent);
   const cleanable = items.filter((c) => c.size > 0);
   const allOn = cleanable.length > 0 && cleanable.every((c) => selected.has(c.id));
   const home = system?.homeDir;
@@ -62,20 +59,19 @@ export default function Cleanup() {
       : result.failed > 0
         ? ` · ${result.failed} in use, skipped`
         : '';
-    toast(`Freed ${formatBytes(result.freed)}${extra}`);
+    toast(`Moved ${formatBytes(result.trashedBytes ?? 0)} to Trash${extra}`);
   };
 
   const start = () => {
     if (!chosen.length) return;
-    if (settings?.confirmBeforeClean === false) void run();
-    else setConfirming(true);
+    setConfirming(true);
   };
 
   const big = splitBytes(total);
 
   return (
     <div className="screen">
-      <ScreenHead title="Cleanup" sub="Caches, temp files and logs your apps rebuild on their own. Safe items are picked for you.">
+      <ScreenHead title="Cleanup" sub="Review stale items before moving them to Trash. Nothing is selected automatically or permanently erased.">
         <div className="fx-head-actions">
           <button type="button" className="btn small" onClick={() => void smartScan()} disabled={scanning || cleaning}>
             {scanning ? <span className="spinner" /> : <Icon name="scan" />}
@@ -134,11 +130,10 @@ export default function Cleanup() {
               {items.map((c) => {
                 const empty = c.size <= 0;
                 const on = selected.has(c.id) && !empty;
-                const perm = isPermanent(c);
                 return (
                   <label key={c.id} className={`row${on ? ' on' : ''}${empty ? ' off' : ''}`}>
                     <input type="checkbox" className="check" checked={on} disabled={empty || cleaning} onChange={() => toggle(c.id)} aria-label={c.name} />
-                    <span className={`chip-ico${perm ? ' warm' : c.safe ? '' : ' mute'}`}>
+                    <span className={`chip-ico${c.safe ? '' : ' mute'}`}>
                       <Icon name={c.icon} />
                     </span>
                     <div className="grow">
@@ -149,12 +144,6 @@ export default function Cleanup() {
                       </div>
                     </div>
                     <div className="tags">
-                      {perm && (
-                        <span className="tag keep">
-                          <Icon name="warning" />
-                          Permanent
-                        </span>
-                      )}
                       {!empty && <span className={`tag ${c.safe ? 'safe' : 'review'}`}>{c.safe ? 'Safe' : 'Review'}</span>}
                     </div>
                     <span className="size">{empty ? 'Clean' : formatBytes(c.size)}</span>
@@ -169,22 +158,18 @@ export default function Cleanup() {
       {junk && cleanable.length > 0 && (
         confirming ? (
           <div className="fx-dock" role="alertdialog" aria-label="Confirm cleanup">
-            <span className={`chip-ico${hasPermanent ? ' warm' : ''}`}>
-              <Icon name={hasPermanent ? 'warning' : 'broom'} />
+            <span className="chip-ico">
+              <Icon name="broom" />
             </span>
             <div className="grow">
-              <div className="fx-dock-q">Delete {formatBytes(total)} of caches and junk?</div>
-              {hasPermanent ? (
-                <div className="fx-dock-note warn">Includes emptying the Trash. That part can't be undone.</div>
-              ) : (
-                <div className="fx-dock-note">They rebuild themselves when apps need them.</div>
-              )}
+              <div className="fx-dock-q">Move {formatBytes(total)} to Trash?</div>
+              <div className="fx-dock-note">You can restore them from Trash. Disk space is not freed yet.</div>
             </div>
             <button type="button" className="btn ghost" onClick={() => setConfirming(false)}>
               Cancel
             </button>
-            <button type="button" className={`btn primary${hasPermanent ? ' danger' : ''}`} onClick={() => void run()} autoFocus>
-              Delete
+            <button type="button" className="btn primary" onClick={() => void run()} autoFocus>
+              Move to Trash
             </button>
           </div>
         ) : (

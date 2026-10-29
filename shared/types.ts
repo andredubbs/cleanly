@@ -46,7 +46,8 @@ export interface JunkCategory {
 }
 
 export interface CleanResult {
-  freed: number;
+  freed: number;         // physically freed; moving to Trash does not free disk space
+  trashedBytes?: number; // recoverable bytes moved to Trash
   removed: number;
   failed: number;
   skipped: string[];      // short human-readable notes ("12 files in use")
@@ -119,6 +120,7 @@ export type Background = 'mist' | 'grid' | 'dots' | 'grain';
 
 export interface Settings {
   aiProvider: AiProvider;
+  cloudAiEnabled: boolean;
   hasClaudeKey: boolean;
   hasOpenAiKey: boolean;
   background: Background;
