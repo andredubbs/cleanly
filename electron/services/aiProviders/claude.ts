@@ -39,7 +39,7 @@ function friendlyError(err: unknown): Error {
 }
 
 export async function askClaude(req: ProviderRequest): Promise<unknown> {
-  const client = new Anthropic({ apiKey: req.apiKey, timeout: 60_000, maxRetries: 1 });
+  const client = new Anthropic({ baseURL: 'https://api.anthropic.com', apiKey: req.apiKey, timeout: 60_000, maxRetries: 1 });
 
   let response;
   try {

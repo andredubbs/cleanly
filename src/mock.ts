@@ -111,7 +111,7 @@ function initialJunk(): JunkCategory[] {
       locations: [tilde(join(HOME, 'Downloads'))],
       safe: false,
     },
-  ];
+  ].filter((c) => c.id !== 'recycle-bin').map((c) => ({ ...c, safe: false } as JunkCategory));
 }
 
 function initialLargeFiles(): LargeFile[] {
@@ -414,6 +414,7 @@ function initialApps(): InstalledApp[] {
 function initialSettings(): Settings {
   return {
     aiProvider: 'claude',
+    cloudAiEnabled: false,
     hasClaudeKey: false,
     hasOpenAiKey: false,
     background: 'mist',
@@ -446,7 +447,7 @@ export function createMockApi(): CleanlyApi {
   let dupes = initialDupes();
   const tree = initialSpaces();
   const treeD = initialDriveD();
-  let startup = initialStartup();
+  const startup = initialStartup();
   let apps = initialApps();
   let settings = initialSettings();
   const total = 512 * GB;
@@ -546,7 +547,7 @@ export function createMockApi(): CleanlyApi {
       }
       emit({ task: 'clean', phase: 'Done', done: picked.length, total: picked.length });
       junk = junk.map((c) => (ids.includes(c.id) ? { ...c, size: 0, count: 0 } : c));
-      used = Math.max(0, used - freed);
+      // Trash is recoverable and still occupies disk space.
       const appData = tree.children?.find((c) => c.name === 'AppData');
       const downloads = tree.children?.find((c) => c.name === 'Downloads');
       const appFreed = picked.filter((c) => ['user-temp', 'browser-caches', 'crash-reports', 'dev-caches'].includes(c.id)).reduce((a, c) => a + c.size, 0);
@@ -563,7 +564,7 @@ export function createMockApi(): CleanlyApi {
         tree.reclaimable = Math.max(0, tree.reclaimable - cut);
         large = large.filter((f) => !(f.path.startsWith(join(HOME, 'Downloads')) && now - f.accessed > 90 * DAY));
       }
-      const result: CleanResult = { freed, removed, failed, skipped };
+      const result: CleanResult = { freed: 0, trashedBytes: freed, removed, failed, skipped };
       return result;
     },
 
@@ -605,14 +606,12 @@ export function createMockApi(): CleanlyApi {
           .filter((g) => g.files.length > 1);
         if (onD(p)) {
           removeFromTree(treeD, p, bytes);
-          usedD = Math.max(0, usedD - bytes);
         } else {
           removeFromTree(tree, p, bytes);
-          used = Math.max(0, used - bytes);
         }
       }
       const failed = paths.length - removed;
-      return { freed, removed, failed, skipped: failed ? [`${failed} item${failed === 1 ? ' was' : 's were'} not found`] : [] };
+      return { freed: 0, trashedBytes: freed, removed, failed, skipped: failed ? [`${failed} item${failed === 1 ? ' was' : 's were'} not found`] : [] };
     },
 
     async revealPath() {
@@ -621,17 +620,11 @@ export function createMockApi(): CleanlyApi {
 
     async startupItems() {
       await wait();
-      return clone(startup);
+      return clone(startup.map((item) => ({ ...item, canToggle: false, needsAdmin: false })));
     },
 
-    async setStartupItem(id, enabled) {
-      const item = startup.find((s) => s.id === id);
-      if (!item) throw new Error('That startup item no longer exists');
-      if (!item.canToggle) throw new Error(`${item.name} is managed by Windows and cannot be changed here`);
-      // stands in for the administrator prompt
-      await (item.needsAdmin ? wait(900, 1400) : wait(300, 700));
-      startup = startup.map((s) => (s.id === id ? { ...s, enabled } : s));
-      return clone(startup);
+    async setStartupItem() {
+      throw new Error('Startup changes are disabled in this safety fork.');
     },
 
     async installedApps() {
@@ -670,6 +663,7 @@ export function createMockApi(): CleanlyApi {
     },
 
     async setSettings(patch) {
+      if (patch.confirmBeforeClean === false) throw new Error('Cleanup confirmation cannot be disabled.');
       await wait(80, 250);
       settings = { ...settings, ...patch };
       return { ...settings };
@@ -683,6 +677,7 @@ export function createMockApi(): CleanlyApi {
     },
 
     async askAi(question, context) {
+      if (!settings.cloudAiEnabled) throw new Error('Cloud AI is off. Enable it in Settings first.');
       await wait(900, 1200);
       const safeJunk = (context.junk ?? []).filter((j) => j.size > 0);
       const bigOnes = (context.largeFiles ?? []).slice().sort((a, b) => b.size - a.size).slice(0, 3);
@@ -690,14 +685,14 @@ export function createMockApi(): CleanlyApi {
       const junkTotal = safeJunk.reduce((a, j) => a + j.size, 0);
       const parts: string[] = [];
       if (question.trim()) parts.push(`Here is what I would do about "${question.trim().slice(0, 80)}".`);
-      if (junkTotal > 0) parts.push(`Caches and temporary files add up to ${gb(junkTotal)}. Apps rebuild them on their own, so clearing them is safe.`);
+      if (junkTotal > 0) parts.push(`These items add up to ${gb(junkTotal)}. Review them before moving them to Trash.`);
       if (bigOnes.length) parts.push(`Your biggest single files are installers and disk images you have not opened in months. Check them before removing; they go to the Recycle Bin first.`);
-      if (context.disk) parts.push(`After that you would have about ${gb(context.disk.free + junkTotal)} free.`);
+      if (context.disk) parts.push(`Moving items to Trash does not free disk space until you empty it yourself.`);
       parts.push('Leave AppData\\Roaming and anything under Documents alone unless you know what it is.');
       const advice: AiAdvice = {
         answer: parts.join(' '),
         suggestions: [
-          ...safeJunk.slice(0, 3).map((j) => ({ path: j.locations[0] ?? j.name, verdict: 'safe' as const, reason: `${j.name}: regenerated automatically` })),
+          ...safeJunk.slice(0, 3).map((j) => ({ path: j.locations[0] ?? j.name, verdict: 'review' as const, reason: `${j.name}: regenerated automatically` })),
           ...bigOnes.map((f) => ({ path: f.path, verdict: 'review' as const, reason: `${gb(f.size)}, last changed ${Math.round((now - f.modified) / DAY)} days ago` })),
           { path: tilde(join(HOME, 'Documents')), verdict: 'keep' as const, reason: 'Your own work. Only remove files you recognize.' },
         ],

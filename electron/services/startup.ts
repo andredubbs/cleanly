@@ -246,59 +246,6 @@ function prettyName(valueName: string, command: string): string {
 
 const systemRoot = () => process.env.SystemRoot ?? process.env.windir ?? 'C:\\Windows';
 
-/** Quotes one argument so CommandLineToArgvW reads it back unchanged. */
-function winArg(a: string): string {
-  if (a && !/[\s"]/.test(a)) return a;
-  return `"${a.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
-}
-
-/** PowerShell single-quoted literal; PowerShell also treats typographic single quotes as quotes. */
-const psLiteral = (s: string) => `'${s.replace(/['\u2018\u2019\u201A\u201B]/g, '$&$&')}'`;
-
-const UAC_CANCELLED = 1223;
-
-/**
- * Runs one program elevated (UAC prompt) and waits for it.
- * Exit codes of elevated children are unreliable in Windows PowerShell 5.1, so callers verify the effect themselves;
- * this only tells them whether the prompt was declined.
- */
-async function runElevated(file: string, args: string[]): Promise<'done' | 'cancelled'> {
-  const argLine = args.map(winArg).join(' ');
-  const script = [
-    "$ErrorActionPreference = 'Stop'",
-    `try { $p = Start-Process -FilePath ${psLiteral(file)} -ArgumentList ${psLiteral(argLine)} -Verb RunAs -WindowStyle Hidden -PassThru } catch { exit ${UAC_CANCELLED} }`,
-    // keep the process handle before it exits, otherwise ExitCode and WaitForExit can lose track of it
-    '$null = $p.Handle',
-    '$p.WaitForExit()',
-    'exit 0',
-  ].join('; ');
-  const powershell = path.join(systemRoot(), 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const res = await run(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], 180000);
-  return res.code === UAC_CANCELLED ? 'cancelled' : 'done';
-}
-
-async function setWindows(id: string, enabled: boolean): Promise<void> {
-  if (winTargets.size === 0) await listWindows();
-  const target = winTargets.get(id);
-  if (!target) throw new Error('This item cannot be changed from Cleanly');
-  // Same 12-byte value Task Manager writes; deleting it would also mean "enabled".
-  const data = (enabled ? '02' : '03') + '0'.repeat(22);
-  const args = ['add', target.approvedKey, '/v', target.valueName, '/t', 'REG_BINARY', '/d', data, '/f', ...REG_VIEW];
-  let outcome: 'done' | 'cancelled' = 'done';
-  if (target.elevated) {
-    outcome = await runElevated(path.join(systemRoot(), 'System32', 'reg.exe'), args);
-  } else {
-    await run(path.join(systemRoot(), 'System32', 'reg.exe'), args);
-  }
-  // the registry is the source of truth: whatever the exit codes said, check what is actually stored now
-  const now = (await approvedStates(target.approvedKey)).get(target.valueName.toLowerCase()) ?? true;
-  if (now === enabled) return;
-  if (outcome === 'cancelled') throw new Error('Permission was not given in the Windows prompt, so nothing changed');
-  throw new Error(target.elevated
-    ? 'Windows did not allow the change. Try again and choose Yes in the permission prompt.'
-    : 'Windows did not allow the change');
-}
-
 /* ---------- macOS ---------- */
 
 interface MacTarget {
@@ -404,33 +351,6 @@ async function listMac(): Promise<StartupItem[]> {
   return items;
 }
 
-const shQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-const appleScriptString = (s: string) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-
-async function setMac(id: string, enabled: boolean): Promise<void> {
-  if (macTargets.size === 0) await listMac();
-  const target = macTargets.get(id);
-  if (!target) throw new Error('This item cannot be changed from Cleanly');
-  // LaunchAgents (also the all-users ones) run in each user's GUI domain, not in "system".
-  const domain = `gui/${uid()}`;
-  const service = `${domain}/${target.label}`;
-  // enable/disable persists across logins; bootstrap/bootout applies it right now.
-  const persist = await run('/bin/launchctl', [enabled ? 'enable' : 'disable', service]);
-  if (persist.ok) {
-    await run('/bin/launchctl', enabled ? ['bootstrap', domain, target.plist] : ['bootout', domain, target.plist]);
-    return;
-  }
-  if (!target.elevated) throw new Error('macOS did not allow this change');
-  if (!SAFE_LABEL.test(target.label) || !SAFE_PLIST.test(path.basename(target.plist))) {
-    throw new Error('This item cannot be changed from Cleanly');
-  }
-  const cmd = enabled
-    ? `/bin/launchctl enable ${shQuote(service)} && (/bin/launchctl bootstrap ${shQuote(domain)} ${shQuote(target.plist)} || true)`
-    : `/bin/launchctl disable ${shQuote(service)} && (/bin/launchctl bootout ${shQuote(domain)} ${shQuote(target.plist)} || true)`;
-  const res = await run('/usr/bin/osascript', ['-e', `do shell script ${appleScriptString(cmd)} with administrator privileges`], 180000);
-  if (!res.ok) throw new Error('macOS did not allow the change');
-}
-
 /* ---------- Public API ---------- */
 
 export async function listStartup(): Promise<StartupItem[]> {
@@ -442,13 +362,9 @@ export async function listStartup(): Promise<StartupItem[]> {
     items = [];
   }
   const rank = { high: 0, medium: 1, low: 2 } as const;
-  return items.sort((a, b) => rank[a.impact] - rank[b.impact] || a.name.localeCompare(b.name));
+  return items.map((item) => ({ ...item, canToggle: false, needsAdmin: false })).sort((a, b) => rank[a.impact] - rank[b.impact] || a.name.localeCompare(b.name));
 }
 
-export async function setStartup(id: unknown, enabled: unknown): Promise<StartupItem[]> {
-  if (typeof id !== 'string' || id.length > 600 || typeof enabled !== 'boolean') throw new Error('Invalid request');
-  if (process.platform === 'win32') await setWindows(id, enabled);
-  else if (process.platform === 'darwin') await setMac(id, enabled);
-  else throw new Error('Startup items are not supported on this system');
-  return listStartup();
+export async function setStartup(_id: unknown, _enabled: unknown): Promise<StartupItem[]> {
+  throw new Error('Startup changes are disabled in this safety fork. No background services were changed.');
 }

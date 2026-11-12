@@ -136,7 +136,7 @@ function createWindow() {
     minHeight: 740,
     show: false,
     backgroundColor: '#f2f3f6',
-    title: 'Cleanly',
+    title: 'Cleanly Safety',
     titleBarStyle: 'hidden',
     ...(isMac
       ? { trafficLightPosition: { x: 20, y: 16 } }

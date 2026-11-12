@@ -1,7 +1,7 @@
 {
-  "name": "cleanly",
-  "productName": "Cleanly",
-  "version": "0.1.1",
+  "name": "cleanly-safety",
+  "productName": "Cleanly Safety",
+  "version": "0.1.2",
   "description": "A stylish, safe PC cleaner for Windows and macOS",
   "author": "0xCodez",
   "license": "UNLICENSED",
@@ -16,7 +16,8 @@
     "icons": "node scripts/make-icons.mjs",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",
-    "dist:mac": "npm run build && electron-builder --mac"
+    "dist:mac": "node scripts/preflight-release.mjs && npm run build && electron-builder --mac",
+    "test": "node scripts/test.mjs && node --test tests/release.test.mjs"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^1.3.0",

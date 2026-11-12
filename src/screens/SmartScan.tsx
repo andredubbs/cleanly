@@ -139,10 +139,7 @@ export default function SmartScan() {
     cleaning,
     cleanPulse,
     lastCleanAt: cleanedAt,
-    settings,
     smartScan,
-    cleanJunk,
-    toast,
   } = useStore();
   const now = useNow(30_000);
 
@@ -151,46 +148,29 @@ export default function SmartScan() {
   // with nothing to clean the capsule offers a rescan instead of sitting there disabled
   const nothingLeft = !!lastScanAt && !scanning && !cleaning && junk !== null && reclaimable === 0;
 
-  const safe = useMemo(() => (junk ?? []).filter((c) => c.safe && c.size > 0), [junk]);
-  const safeIds = useMemo(() => safe.map((c) => c.id), [safe]);
-  const itemCount = sum(safe.map((c) => c.count));
-  const canClean = !scanning && !cleaning && safeIds.length > 0;
+  const candidates = useMemo(() => (junk ?? []).filter((c) => c.size > 0), [junk]);
+  const candidateIds = useMemo(() => candidates.map((c) => c.id), [candidates]);
+  const itemCount = sum(candidates.map((c) => c.count));
+  const canReview = !scanning && !cleaning && candidateIds.length > 0;
 
-  const [armed, setArmed] = useState(false);
-  useEffect(() => {
-    if (!armed) return;
-    const t = setTimeout(() => setArmed(false), 5000);
-    return () => clearTimeout(t);
-  }, [armed]);
-
-  const clean = useCallback(async () => {
-    if (!canClean) return;
-    if ((settings?.confirmBeforeClean ?? true) && !armed) {
-      setArmed(true);
-      return;
-    }
-    setArmed(false);
-    const res = await cleanJunk(safeIds);
-    if (!res) return;
-    const note = res.skipped.length ? ` · ${res.skipped.slice(0, 2).join(', ')}` : res.failed ? ` · ${res.failed} in use, skipped` : '';
-    toast(`Freed ${formatBytes(res.freed)}${note}`);
-  }, [canClean, settings, armed, cleanJunk, safeIds, toast]);
+  // Smart Scan never mutates files. Selection and confirmation live in Cleanup.
+  const clean = useCallback(async () => { go('cleanup'); }, [go]);
 
   const rescan = useCallback(() => {
     void smartScan();
   }, [smartScan]);
 
-  // Enter cleans, like the concept's hint says, unless focus is on something that handles Enter itself
-  const cleanRef = useRef(clean);
+  // Enter opens review, never removes anything, unless focus is on something that handles Enter itself
+  const reviewRef = useRef(clean);
   useEffect(() => {
-    cleanRef.current = clean;
+    reviewRef.current = clean;
   }, [clean]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Enter' || e.repeat || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
       if (t && t !== document.body && t.closest('button, a, input, textarea, select, [contenteditable="true"], [role="button"]')) return;
-      void cleanRef.current();
+      void reviewRef.current();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -221,23 +201,21 @@ export default function SmartScan() {
   const busyProgress = (scanning || cleaning) && progress && progress.total > 0 ? progress.done / progress.total : undefined;
 
   let hint: string;
-  if (cleaning) hint = 'Deleting caches and temp files…';
+  if (cleaning) hint = 'Moving selected items to Trash…';
   else if (scanning) hint = 'Looking for caches and temp files…';
-  else if (armed) hint = 'Caches are deleted for good · press again';
-  else if (itemCount) hint = `${itemCount.toLocaleString('en-US')} items · ${safeIds.length} ${safeIds.length === 1 ? 'group' : 'groups'} · ↵ to clean`;
-  else if (lastScanAt) hint = 'Nothing safe to remove right now';
+  else if (itemCount) hint = `${itemCount.toLocaleString('en-US')} items · ${candidateIds.length} ${candidateIds.length === 1 ? 'group' : 'groups'} · ↵ to review`;
+  else if (lastScanAt) hint = 'No cleanup candidates found';
   else hint = 'Run a scan to see what can go';
 
-  let ctaLabel = 'Clean';
+  let ctaLabel = 'Review';
   let ctaSub = reclaimable > 0 ? formatBytes(reclaimable) : 'Nothing to clean';
   if (cleaning) [ctaLabel, ctaSub] = ['Cleaning', formatBytes(reclaimable)];
   else if (scanning) [ctaLabel, ctaSub] = ['Scanning', phase ?? 'one moment'];
-  else if (armed) [ctaLabel, ctaSub] = ['Clean now?', `${formatBytes(reclaimable)} for good`];
   else if (nothingLeft) [ctaLabel, ctaSub] = ['Rescan', allClear ? 'all clear' : 'nothing to clean'];
   else if (!lastScanAt) [ctaLabel, ctaSub] = ['Scan', 'find junk'];
 
   const ctaAction = nothingLeft || (!lastScanAt && !scanning) ? rescan : clean;
-  const ctaDisabled = !nothingLeft && !!lastScanAt && !canClean;
+  const ctaDisabled = !nothingLeft && !!lastScanAt && !canReview;
 
   // space map
   const bubbles = useMemo<BubbleDatum[]>(() => {
@@ -303,11 +281,11 @@ export default function SmartScan() {
               <span className={`dot ${dot}`} />
               <span className="eyebrow-t">{eyebrow}</span>
             </span>
-            <h1>{afterClean ? 'Left to clean' : 'Ready to reclaim'}</h1>
+            <h1>{afterClean ? 'Left to clean' : 'Ready to review'}</h1>
             <div className="big" aria-live="polite">
               <span>{big.value}</span> <small>{big.unit}</small>
             </div>
-            <p>Caches and temp files are deleted for good — they rebuild themselves. Your own files always go to Trash.</p>
+            <p>Review each category before moving items to Trash. Nothing is selected automatically or permanently erased.</p>
             <div className="actions">
               <CleanButton
                 label={ctaLabel}
@@ -327,11 +305,6 @@ export default function SmartScan() {
                   <div className="hero-progress">
                     <Progress value={busyProgress} />
                   </div>
-                )}
-                {armed && (
-                  <button type="button" className="cancel" onClick={() => setArmed(false)}>
-                    Cancel
-                  </button>
                 )}
               </div>
             </div>
@@ -412,7 +385,7 @@ export default function SmartScan() {
               <span className="lc-skel" />
             )}
           </div>
-          <div className="lc-sub">{allClear ? 'Caches & temp files removed' : 'Caches · temp files · trash'}</div>
+          <div className="lc-sub">{allClear ? 'Caches & temp files removed' : 'Review before moving to Trash'}</div>
           <div className="lc-foot">
             {allClear ? (
               <span className="pill done">
@@ -420,19 +393,15 @@ export default function SmartScan() {
                 Removed
               </span>
             ) : (
-              <button type="button" className="pill" onClick={() => void clean()} disabled={!canClean}>
+              <button type="button" className="pill" onClick={() => void clean()} disabled={!canReview}>
                 {cleaning ? (
                   <>
                     <span className="spinner pill-spin" />
                     Removing
                   </>
-                ) : armed ? (
-                  <>
-                    Confirm <Icon name="check" />
-                  </>
                 ) : (
                   <>
-                    Remove <Icon name="arrow" />
+                    Review <Icon name="arrow" />
                   </>
                 )}
               </button>

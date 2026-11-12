@@ -1,10 +1,12 @@
 import { shell } from 'electron';
+import { createHash } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { CleanResult } from '../../shared/types';
 import { dataDriveMounts } from './disk';
-import { dirSize, isInside, knownFolders, mapLimit, samePath, walk } from './walk';
+import { isManagedPath, PACKAGE_EXT } from './pathPolicy';
+import { isInside, knownFolders, samePath } from './walk';
 
 const isWin = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
@@ -95,7 +97,7 @@ export function isSafeUserPath(p: unknown, home: string = os.homedir(), drives: 
   if (typeof p !== 'string' || p.length === 0 || p.length > 4096 || p.includes('\0')) return false;
   if (!path.isAbsolute(p)) return false;
   const abs = path.resolve(p);
-  if (path.parse(abs).root === abs) return false;
+  if (path.parse(abs).root === abs || isManagedPath(abs)) return false;
   if (isSafeHomePath(abs, home)) return true;
   return drives.some((m) => !isInside(home, m) && !samePath(home, m) && !isInside(m, home) && isSafeDrivePath(p, abs, m));
 }
@@ -194,12 +196,17 @@ export async function trashPaths(paths: unknown): Promise<CleanResult> {
   const list = allowed.filter((p) => !allowed.some((o) => o !== p && isInside(o, p)));
 
   for (const p of list) {
-    const size = await dirSize(p);
     try {
+      // Revalidate after traversal; reject a parent containing packages, links or managed data.
+      const inspected = await inspectTree(p, undefined, true);
+      if (!inspected) { blocked++; continue; }
+      const again = await resolveSafe(p, drives);
+      const last = await inspectTree(p, undefined, true);
+      if (again.kind !== 'ok' || !samePath(again.real, p) || !last || last.fingerprint !== inspected.fingerprint) { blocked++; continue; }
       // Electron aborts (instead of deleting for good) when Windows cannot recycle an item,
       // e.g. it is bigger than the Recycle Bin or the bin is turned off; that lands in `errors`.
       await shell.trashItem(p);
-      result.freed += size;
+      result.trashedBytes = (result.trashedBytes ?? 0) + inspected.size;
       result.removed++;
     } catch (err) {
       const msg = String((err as Error)?.message ?? err).toLowerCase();
@@ -218,6 +225,7 @@ export async function trashPaths(paths: unknown): Promise<CleanResult> {
 
 export interface DeleteOutcome {
   freed: number;
+  trashedBytes: number;
   removed: number;
   /** Files held open by another app. */
   locked: number;
@@ -228,104 +236,59 @@ export interface DeleteOutcome {
 }
 
 export interface DeleteOptions {
-  /** Only delete files last modified before this epoch ms (keeps fresh temp files of running apps). */
+  /** Entries must be wholly older than this cutoff and at least seven days old. */
   modifiedBefore?: number;
+  /** Recheck the owning app immediately before the recoverable move. */
+  canTrash?: () => Promise<boolean>;
 }
 
-type UnlinkResult = 'ok' | 'gone' | 'locked' | 'denied';
-
-async function unlinkFile(p: string): Promise<UnlinkResult> {
+/** Bounded, fail-closed inspection; no unlink/rmdir or fallback deletion. */
+export async function inspectTree(target: string, cutoff?: number, personal = false): Promise<{ size: number; fingerprint: string } | null> {
   try {
-    await fsp.unlink(p);
-    return 'ok';
-  } catch (err) {
-    let code = (err as NodeJS.ErrnoException).code;
-    if (code === 'EPERM' && isWin) {
-      // read-only attribute; clear it once and retry
-      try {
-        await fsp.chmod(p, 0o666);
-        await fsp.unlink(p);
-        return 'ok';
-      } catch (err2) {
-        code = (err2 as NodeJS.ErrnoException).code;
-      }
+    const first = await fsp.lstat(target);
+    const stack = [target];
+    let size = 0;
+    const digest = createHash('sha256');
+    let seen = 0;
+    while (stack.length) {
+      if (++seen > 50_000) return null;
+      const p = stack.pop()!;
+      const st = await fsp.lstat(p);
+      if (st.isSymbolicLink() || (!st.isFile() && !st.isDirectory())) return null;
+      if (personal ? isManagedPath(p) : PACKAGE_EXT.test(path.basename(p))) return null;
+      if (cutoff !== undefined && Math.max(st.mtimeMs, st.birthtimeMs || 0, (st.isFile() ? st.atimeMs : 0) || 0) >= cutoff) return null;
+      digest.update(JSON.stringify([p, st.dev, st.ino, st.mode, st.size, st.mtimeMs, st.ctimeMs]));
+      if (st.isDirectory()) {
+        for (const name of (await fsp.readdir(p)).sort()) stack.push(path.join(p, name));
+      } else size += st.size;
     }
-    if (code === 'ENOENT') return 'gone';
-    if (code === 'EBUSY' || (code === 'EPERM' && isWin)) return 'locked';
-    return 'denied';
-  }
+    const last = await fsp.lstat(target);
+    const fingerprint = (st: typeof first) => `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+    if (fingerprint(first) !== fingerprint(last)) return null;
+    return { size, fingerprint: digest.digest('hex') };
+  } catch { return null; }
 }
 
-/**
- * Permanently deletes one cache entry (file or folder) that must live strictly inside `root`.
- * Never follows links: link entries inside are left in place. Locked files are skipped and counted.
- */
-export async function deleteCacheEntry(target: string, root: string, opts: DeleteOptions = {}): Promise<DeleteOutcome> {
-  const out: DeleteOutcome = { freed: 0, removed: 0, locked: 0, denied: 0, refused: false };
+/** Moves one wholly stale cache entry to Trash, never permanently deletes anything. */
+export async function trashCacheEntry(target: string, root: string, opts: DeleteOptions = {}): Promise<DeleteOutcome> {
+  const out: DeleteOutcome = { freed: 0, trashedBytes: 0, removed: 0, locked: 0, denied: 0, refused: false };
   try {
-    const st = await fsp.lstat(target);
-    if (st.isSymbolicLink() || !isInside(root, target)) {
-      out.refused = true;
-      return out;
-    }
     const [realRoot, realTarget] = await Promise.all([fsp.realpath(root), fsp.realpath(target)]);
-    if (!isInside(realRoot, realTarget)) {
-      out.refused = true;
-      return out;
+    // Reject aliasing roots/parents as well as direct links. Caller supplies a derived cache root, never renderer input.
+    if (!samePath(realRoot, root) || !samePath(realTarget, target) || !isInside(realRoot, realTarget)) {
+      out.refused = true; return out;
     }
-
-    const cutoff = opts.modifiedBefore;
-    // Creation time counts too: files an installer just unpacked keep the archive's old mtime.
-    const fresh = (s: { mtimeMs: number; birthtimeMs: number }) =>
-      cutoff !== undefined && Math.max(s.mtimeMs, s.birthtimeMs || 0) >= cutoff;
-    const tally = (r: UnlinkResult, size: number) => {
-      if (r === 'ok') {
-        out.freed += size;
-        out.removed++;
-      } else if (r === 'locked') out.locked++;
-      else if (r === 'denied') out.denied++;
-    };
-
-    if (st.isFile()) {
-      if (!fresh(st)) tally(await unlinkFile(target), st.size);
-      return out;
-    }
-    if (!st.isDirectory()) return out;
-
-    // Plain arrays instead of WalkFile objects: a single cache folder can hold a million files.
-    const filePaths: string[] = [];
-    const fileSizes: number[] = [];
-    const dirs: { path: string; depth: number }[] = [];
-    await walk(target, {
-      onFile: (f) => {
-        if (fresh(f)) return;
-        filePaths.push(f.path);
-        fileSizes.push(f.size);
-      },
-      onDir: (p, depth) => dirs.push({ path: p, depth }),
-    });
-
-    // Folders a running app created recently stay, even when empty. Checked before any unlink,
-    // because deleting files bumps the folder's own mtime.
-    const keepDirs = new Set<string>();
-    if (cutoff !== undefined) {
-      if (fresh(st)) keepDirs.add(target);
-      await mapLimit(dirs, 16, async (d) => {
-        try {
-          if (fresh(await fsp.lstat(d.path))) keepDirs.add(d.path);
-        } catch {
-          // gone already
-        }
-      });
-    }
-
-    await mapLimit(filePaths, 16, async (p, i) => tally(await unlinkFile(p), fileSizes[i]));
-    dirs.sort((a, b) => b.depth - a.depth);
-    for (const d of dirs) if (!keepDirs.has(d.path)) await fsp.rmdir(d.path).catch(() => undefined);
-    if (!keepDirs.has(target)) await fsp.rmdir(target).catch(() => undefined);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'EACCES' || code === 'EPERM') out.denied++;
-  }
+    const cutoff = Math.min(opts.modifiedBefore ?? Infinity, Date.now() - 7 * 86_400_000);
+    if (!Number.isFinite(cutoff)) { out.refused = true; return out; }
+    const item = await inspectTree(target, cutoff);
+    if (!item) { out.refused = true; return out; }
+    const check = await inspectTree(target, cutoff);
+    if (!check || check.fingerprint !== item.fingerprint || check.size !== item.size) { out.refused = true; return out; }
+    if (!samePath(await fsp.realpath(target), realTarget)) { out.refused = true; return out; }
+    if (opts.canTrash && !(await opts.canTrash())) { out.refused = true; return out; }
+    await shell.trashItem(realTarget);
+    out.trashedBytes = item.size;
+    out.removed = 1;
+  } catch { out.denied++; }
   return out;
 }
