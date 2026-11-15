@@ -6,3 +6,5 @@ Thumbs.db
 .claude/
 dist-electron/
 release/
+
+.test-build/

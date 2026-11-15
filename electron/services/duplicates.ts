@@ -1,4 +1,5 @@
 import { app } from 'electron';
+import { PACKAGE_EXT, isManagedPath } from './pathPolicy';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, promises as fs } from 'node:fs';
@@ -22,7 +23,6 @@ const MAX_GROUPS = 200;
 // Hidden folders, dependency trees and macOS packages (Photos/Music libraries, apps)
 // hold files the user does not manage directly; removing a "duplicate" inside them breaks the package.
 const SKIP_DIRS = new Set(['node_modules', '$recycle.bin', 'system volume information', '__pycache__', 'bower_components']);
-const PACKAGE_EXT = /\.(app|photoslibrary|photolibrary|musiclibrary|tvlibrary|imovielibrary|fcpbundle|logicx|band|aplibrary|lrdata|lrlibrary|bundle|framework|plugin|kext|xcodeproj|xcworkspace|pkg|mpkg|sparsebundle|rtfd|pages|numbers|key|vmwarevm|pvm|utm)$/i;
 
 function scanRoots(): string[] {
   const home = os.homedir();
@@ -93,7 +93,7 @@ async function walk(roots: string[], report: (seen: number, dir: string) => void
       }
       report(seen, dir);
       for (const name of names) {
-        if (name.startsWith('.')) continue;
+        if (name.startsWith('.') || isManagedPath(path.join(dir, name))) continue;
         const full = path.join(dir, name);
         // bigint keeps NTFS 64-bit file ids exact; as plain numbers distinct files could share an id.
         let st: import('node:fs').BigIntStats;

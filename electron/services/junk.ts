@@ -3,7 +3,7 @@ import { promises as fsp, type Dirent } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { CleanResult, IconName, JunkCategory, ScanProgress } from '../../shared/types';
-import { deleteCacheEntry, isSafeUserPath, trashPaths } from './trash';
+import { trashCacheEntry, inspectTree, isSafeUserPath, trashPaths } from './trash';
 import {
   DAY_MS,
   displayPath,
@@ -43,7 +43,6 @@ interface Def {
 const isWin = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
 const OLD_DOWNLOAD_MS = 90 * DAY_MS;
-const SCAN_CAP = 1_500_000;
 const DOWNLOAD_IGNORE = new Set(['desktop.ini', 'thumbs.db', '.ds_store', '.localized']);
 
 const home = () => os.homedir();
@@ -245,46 +244,13 @@ function winDefs(): Def[] {
   ];
 }
 
-const MAC_BROWSER_CACHES = [
-  'Google',
-  'BraveSoftware',
-  'Microsoft Edge',
-  'Arc',
-  'company.thebrowser.Browser',
-  'com.apple.Safari',
-  'Firefox',
-  'Vivaldi',
-  'com.operasoftware.Opera',
-];
-const MAC_DEV_CACHES = ['Yarn', 'pip', 'pnpm'];
-// Sync and transfer state rather than caches: iCloud Drive / CloudKit bookkeeping and background downloads in flight.
-const MAC_KEEP_CACHES = ['com.apple.bird', 'CloudKit', 'com.apple.cloudd', 'com.apple.nsurlsessiond', 'com.apple.akd', 'FamilyCircle'];
-
 function macDefs(): Def[] {
   const support = (...p: string[]) => lib('Application Support', ...p);
   return [
     {
-      id: 'mac-caches',
-      name: 'User caches',
-      description: 'Apps keep these to load faster and rebuild them when needed.',
-      icon: 'layers',
-      safe: true,
-      kind: 'cache',
-      roots: () => dirs([lib('Caches')], () => [...MAC_BROWSER_CACHES, ...MAC_DEV_CACHES, ...MAC_KEEP_CACHES]),
-    },
-    {
-      id: 'mac-logs',
-      name: 'Logs',
-      description: 'Diagnostic logs apps write over time. Nothing needs them to run.',
-      icon: 'doc',
-      safe: true,
-      kind: 'cache',
-      roots: () => dirs([lib('Logs')]),
-    },
-    {
       id: 'browser-cache',
       name: 'Browser caches',
-      description: 'Chrome, Safari, Firefox and others rebuild these as you browse. Logins and history stay.',
+      description: 'Only wholly stale cache entries (7+ days). Close all browsers first. Moved to Trash, not erased.',
       icon: 'globe',
       safe: true,
       kind: 'cache',
@@ -311,46 +277,6 @@ function macDefs(): Def[] {
         paths.push(...(await firefoxCaches(lib('Caches', 'Firefox', 'Profiles'))));
         return dirs(paths);
       },
-    },
-    {
-      id: 'xcode',
-      name: 'Xcode leftovers',
-      description: 'DerivedData, old device support files and simulator caches. Xcode rebuilds them when needed.',
-      icon: 'chip',
-      safe: false,
-      kind: 'cache',
-      roots: () =>
-        dirs([
-          lib('Developer', 'Xcode', 'DerivedData'),
-          lib('Developer', 'Xcode', 'iOS DeviceSupport'),
-          lib('Developer', 'CoreSimulator', 'Caches'),
-        ]),
-    },
-    {
-      id: 'dev-cache',
-      name: 'Developer caches',
-      description: 'npm, Yarn, pnpm and pip caches. The next install downloads packages again.',
-      icon: 'code',
-      safe: false,
-      kind: 'cache',
-      roots: () =>
-        dirs([
-          path.join(home(), '.npm', '_cacache'),
-          lib('Caches', 'Yarn'),
-          lib('pnpm', 'store'),
-          lib('Caches', 'pnpm'),
-          lib('Caches', 'pip'),
-          path.join(home(), '.gradle', 'caches'),
-        ]),
-    },
-    {
-      id: 'trash',
-      name: 'Trash',
-      description: 'Files you already deleted. Emptying it removes them permanently.',
-      icon: 'trash',
-      safe: false,
-      kind: 'cache',
-      roots: () => dirs([path.join(home(), '.Trash')]),
     },
     oldDownloadsDef('Trash'),
   ];
@@ -393,13 +319,13 @@ function oldDownloadsDef(binName: string): Def {
 }
 
 function platformDefs(): Def[] {
-  if (isWin) return winDefs();
-  if (isMac) return macDefs();
-  return linuxDefs();
+  const defs = isWin ? winDefs() : isMac ? macDefs() : linuxDefs();
+  // No empty-Trash operation and no auto-selected categories. Cache cleanup is recoverable and aged.
+  return defs.filter((d) => d.kind !== 'recycle' && d.id !== 'trash')
+    .map((d) => ({ ...d, safe: false, keepNewerThanMs: Math.max(d.keepNewerThanMs ?? 0, 7 * DAY_MS) }));
 }
 
 const lower = (s: string) => s.toLowerCase();
-const newest = (f: { mtimeMs: number; birthtimeMs: number }) => Math.max(f.mtimeMs, f.birthtimeMs || 0);
 
 interface Measured {
   size: number;
@@ -409,33 +335,21 @@ interface Measured {
 
 /** Sizes what a clean would remove: every entry inside each root, minus excluded and too-fresh files. */
 async function measureCache(def: Def, roots: Root[], onTick: (current: string) => void): Promise<Measured> {
-  const cutoff = def.keepNewerThanMs ? Date.now() - def.keepNewerThanMs : undefined;
+  const cutoff = Date.now() - Math.max(def.keepNewerThanMs ?? 0, 7 * DAY_MS);
   const out: Measured = { size: 0, count: 0, locations: [] };
   for (const root of roots) {
     const excluded = new Set((root.exclude ?? []).map(lower));
-    const entries = new Set<string>();
+    let names: string[];
+    try { names = await fsp.readdir(root.path); } catch { continue; }
     let bytes = 0;
-    const top = (p: string) => lower(path.relative(root.path, p).split(path.sep)[0]);
-    await walk(root.path, {
-      maxEntries: SCAN_CAP,
-      skipDir: (_p, name, depth) => depth === 1 && excluded.has(lower(name)),
-      onDir: (p, depth) => {
-        if (depth === 1 && cutoff === undefined) entries.add(top(p));
-      },
-      onFile: (f) => {
-        if (f.depth === 1 && excluded.has(lower(f.name))) return;
-        // Same freshness rule as deleteCacheEntry, so the size shown matches what a clean removes.
-        if (cutoff !== undefined && newest(f) >= cutoff) return;
-        bytes += f.size;
-        entries.add(top(f.path));
-      },
-      onTick: (_n, current) => onTick(current),
-    });
-    if (bytes > 0) {
-      out.size += bytes;
-      out.count += entries.size;
-      out.locations.push(displayPath(root.path));
+    for (const name of names.slice(0, 50_000)) {
+      if (excluded.has(lower(name))) continue;
+      const p = path.join(root.path, name);
+      onTick(p);
+      const item = await inspectTree(p, cutoff);
+      if (item) { bytes += item.size; out.count++; }
     }
+    if (bytes > 0) { out.size += bytes; out.locations.push(displayPath(root.path)); }
   }
   return out;
 }
@@ -580,6 +494,7 @@ export async function scanJunk(progress: Progress): Promise<JunkCategory[]> {
 
 interface Tally {
   freed: number;
+  trashedBytes: number;
   removed: number;
   locked: number;
   denied: number;
@@ -600,8 +515,9 @@ async function cleanCache(def: Def, tally: Tally): Promise<void> {
       continue;
     }
     await mapLimit(names, 4, async (name) => {
-      const r = await deleteCacheEntry(path.join(root.path, name), root.path, { modifiedBefore });
+      const r = await trashCacheEntry(path.join(root.path, name), root.path, { modifiedBefore, canTrash: isMac ? browsersClosed : undefined });
       tally.freed += r.freed;
+      tally.trashedBytes += r.trashedBytes;
       tally.removed += r.removed;
       tally.locked += r.locked;
       tally.denied += r.denied;
@@ -610,31 +526,15 @@ async function cleanCache(def: Def, tally: Tally): Promise<void> {
   }
 }
 
-async function emptyRecycleBin(): Promise<{ freed: number; removed: number; ok: boolean }> {
-  const before = await measureRecycleBin();
-  try {
-    await powershell("Clear-RecycleBin -Force -ErrorAction SilentlyContinue", 180_000);
-  } catch {
-    return { freed: 0, removed: 0, ok: false };
-  }
-  const after = await measureRecycleBin();
-  return {
-    freed: Math.max(0, before.size - after.size),
-    removed: Math.max(0, before.count - after.count),
-    ok: after.count === 0,
-  };
-}
-
 const fmt = (n: number) => n.toLocaleString('en-US');
 
 /** Cleans the chosen categories. Locations are always re-derived here; the renderer only sends ids. */
 export async function cleanJunk(ids: unknown, progress: Progress): Promise<CleanResult> {
+  if (isMac && (Array.isArray(ids) && ids.includes('browser-cache')) && !(await browsersClosed())) {
+    throw new Error('Close all browsers before moving caches to Trash. If their status cannot be checked, cleanup stays off.');
+  }
   const wanted = new Set(Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : []);
-  // Old downloads go to the bin, so they must run after the bin is emptied or they would be erased for good.
-  const binFirst = (d: Def) => (d.kind === 'downloads' ? 1 : 0);
-  const defs = platformDefs()
-    .filter((d) => wanted.has(d.id))
-    .sort((a, b) => binFirst(a) - binFirst(b));
+  const defs = platformDefs().filter((d) => wanted.has(d.id));
   const result: CleanResult = { freed: 0, removed: 0, failed: 0, skipped: [] };
   let locked = 0;
   let refused = 0;
@@ -644,29 +544,21 @@ export async function cleanJunk(ids: unknown, progress: Progress): Promise<Clean
     const def = defs[i];
     progress({ task: 'clean', phase: def.name, done: i, total: defs.length });
     try {
-      if (def.kind === 'recycle') {
-        const r = await emptyRecycleBin();
-        result.freed += r.freed;
-        result.removed += r.removed;
-        if (!r.ok) {
-          result.failed++;
-          result.skipped.push('Some Recycle Bin items could not be removed');
-        }
-        continue;
-      }
       if (def.kind === 'downloads') {
         const { paths } = await findOldDownloads();
         const r = await trashPaths(paths);
         result.freed += r.freed;
+        result.trashedBytes = (result.trashedBytes ?? 0) + (r.trashedBytes ?? 0);
         result.removed += r.removed;
         result.failed += r.failed;
         result.skipped.push(...r.skipped.map((s) => `Old downloads: ${s}`));
         if (r.removed > 0) result.skipped.push(`Old downloads went to the ${isWin ? 'Recycle Bin' : 'Trash'}, so you can restore them`);
         continue;
       }
-      const tally: Tally = { freed: 0, removed: 0, locked: 0, denied: 0, refused: 0 };
+      const tally: Tally = { freed: 0, trashedBytes: 0, removed: 0, locked: 0, denied: 0, refused: 0 };
       await cleanCache(def, tally);
       result.freed += tally.freed;
+      result.trashedBytes = (result.trashedBytes ?? 0) + tally.trashedBytes;
       result.removed += tally.removed;
       result.failed += tally.locked + tally.denied;
       locked += tally.locked;
@@ -681,7 +573,18 @@ export async function cleanJunk(ids: unknown, progress: Progress): Promise<Clean
 
   if (locked) result.skipped.unshift(`${fmt(locked)} ${locked === 1 ? 'file' : 'files'} in use`);
   if (deniedOther) result.skipped.push(`${fmt(deniedOther)} protected ${deniedOther === 1 ? 'file' : 'files'} left alone`);
-  if (refused) result.skipped.push(`${fmt(refused)} linked ${refused === 1 ? 'item' : 'items'} skipped for safety`);
+  if (refused) result.skipped.push(`${fmt(refused)} fresh, linked or otherwise protected ${refused === 1 ? 'item' : 'items'} skipped for safety`);
   progress({ task: 'clean', phase: 'Done', done: defs.length, total: defs.length });
   return result;
+}
+
+/** Fail closed if process inspection fails. Browser helpers count as running too. */
+async function browsersClosed(): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile('/bin/ps', ['-A', '-o', 'comm='], { timeout: 5000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+      if (err) { resolve(false); return; }
+      const processes = String(stdout).trim();
+      resolve(processes.length > 0 && !/Chrome|Chromium|Safari|Brave|Microsoft Edge|Arc\.app|Firefox|Vivaldi|Opera|Browser\.app/i.test(processes));
+    });
+  });
 }

@@ -82,7 +82,7 @@ export default function Speed() {
 
   return (
     <div className="screen sy-screen">
-      <ScreenHead title="Speed" sub="Pick which apps launch with your computer. Fewer at login means a quicker, calmer start.">
+      <ScreenHead title="Speed" sub="Read-only startup inventory. This fork never enables, disables or restarts background services.">
         <button type="button" className="btn small" onClick={() => void load()} disabled={loading}>
           {loading ? <span className="spinner" /> : <Icon name="history" />}
           Refresh
@@ -149,7 +149,7 @@ export default function Speed() {
                 {locked > 0 || admin === 0 ? (
                   <div className="sy-stat">
                     <strong>{locked}</strong>
-                    <span>locked by the system</span>
+                    <span>read-only in this fork</span>
                   </div>
                 ) : (
                   <div className="sy-stat">
@@ -228,9 +228,9 @@ export default function Speed() {
                                 </span>
                               )
                             ) : (
-                              <span className="sy-lock" title="This item is controlled by your system or an administrator policy and cannot be changed here">
+                              <span className="sy-lock" title="Startup changes are disabled in this safety fork">
                                 <Icon name="lock" />
-                                Managed by the system
+                                Read-only
                               </span>
                             )}
                           </div>

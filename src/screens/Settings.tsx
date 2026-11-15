@@ -203,9 +203,9 @@ export default function Settings() {
             </div>
             {spin('confirm')}
             <Toggle
-              checked={settings.confirmBeforeClean}
+              checked={true}
               label="Ask before cleaning"
-              onChange={(v) => void save('confirm', { confirmBeforeClean: v })}
+              onChange={() => toast('Every cleanup requires confirmation')}
             />
           </div>
           <div className="sy-opt col">
@@ -224,7 +224,7 @@ export default function Settings() {
             />
           </div>
           <p className="sy-note" style={{ margin: '6px 0 0' }}>
-            Caches and temporary files are deleted for good. Your own files always go to the Trash, so you can restore them.
+            Cleanup moves items to Trash. Nothing is permanently erased, and disk space is not freed until you empty Trash yourself.
           </p>
         </section>
 
@@ -243,12 +243,19 @@ export default function Settings() {
               onChange={(v) => void save('provider', { aiProvider: v })}
             />
           </div>
+          <div className="sy-opt">
+            <div className="grow">
+              <b>Allow cloud AI</b>
+              <small>Off by default. Sends your typed questions and anonymous item IDs/sizes to the selected provider. API charges may apply.</small>
+            </div>
+            <Toggle checked={settings.cloudAiEnabled} label="Allow cloud AI" onChange={(v) => void save('cloud', { cloudAiEnabled: v })} />
+          </div>
           {PROVIDERS.map((p) => (
             <KeyRow key={p.id} id={p.id} name={p.name} keyUrl={p.keyUrl} has={p.id === 'claude' ? settings.hasClaudeKey : settings.hasOpenAiKey} />
           ))}
           <p className="sy-privacy" style={{ margin: '8px 0 0' }}>
             <Icon name="shield" />
-            Only file names, paths and sizes are shared — never file contents.
+            Scanned file names, paths, dates and contents stay on this computer. Anything you type in a question is sent when cloud AI is on.
           </p>
         </section>
 

@@ -45,7 +45,7 @@ interface Store {
   spacesBusy: string[];
   /** roots whose last walk failed */
   spacesFailed: string[];
-  /** total size of junk categories marked safe — what one tap of Clean frees */
+  /** total size of cleanup candidates; nothing is selected and Trash does not free space */
   reclaimable: number;
   scanning: boolean;
   progress: ScanProgress | null;
@@ -170,7 +170,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setLastClean(result);
         setCleanPulse((n) => n + 1);
         setLastCleanAt(Date.now());
-        setJunk((prev) => (prev ? prev.map((c) => (ids.includes(c.id) ? { ...c, size: 0, count: 0 } : c)) : prev));
+        // Freshness checks, Trash errors or file changes can leave items behind. Never paint those as removed.
+        setJunk(await api.scanJunk());
         await refreshDisk();
         return result;
       } catch (e) {
@@ -204,7 +205,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const spacesScanning = spacesBusy.includes('');
   const spacesError = spacesFailed.includes('');
 
-  const reclaimable = useMemo(() => sum((junk ?? []).filter((c) => c.safe).map((c) => c.size)), [junk]);
+  const reclaimable = useMemo(() => sum((junk ?? []).map((c) => c.size)), [junk]);
 
   const value: Store = {
     screen,

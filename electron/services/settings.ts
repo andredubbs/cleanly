@@ -8,6 +8,7 @@ type StoredKeys = Partial<Record<AiProvider, string>>;
 
 const DEFAULTS: StoredSettings = {
   aiProvider: 'claude',
+  cloudAiEnabled: false,
   background: 'mist',
   largeFileMinMb: 500,
   confirmBeforeClean: true,
@@ -69,9 +70,14 @@ function validatePatch(patch: unknown): Partial<StoredSettings> {
         }
         out.largeFileMinMb = Math.round(value);
         break;
+      case 'cloudAiEnabled':
+        if (typeof value !== 'boolean') throw new Error('Cloud AI consent must be on or off.');
+        out.cloudAiEnabled = value;
+        break;
       case 'confirmBeforeClean':
         if (typeof value !== 'boolean') throw new Error('Confirm before clean must be on or off.');
-        out.confirmBeforeClean = value;
+        if (!value) throw new Error('Cleanup confirmation cannot be disabled in this safety fork.');
+        out.confirmBeforeClean = true;
         break;
       default:
         // hasClaudeKey / hasOpenAiKey and anything else are not writable here.
